@@ -66,3 +66,80 @@ def style_features(text):
 
 def build_features(df):
     return pd.DataFrame([style_features(t) for t in df.text], index=df.index)
+
+
+TOKEN_RE = re.compile(r"[^\W\d_]+(?:'[^\W\d_]+)?|\d+|[^\w\s]")
+
+
+def mask_content(text):
+    """Keep function words and punctuation; replace content words by their shape.
+
+    Topic words do not transfer to unseen domains, while function-word and punctuation
+    patterns might. "The Eiffel tower, built in 1889" -> "the Xx x , x in 0".
+    """
+    out = []
+    for tok in TOKEN_RE.findall(text):
+        low = tok.lower()
+        if low in ENGLISH_STOP_WORDS or not tok[0].isalnum():
+            out.append(low)
+        elif tok[0].isdigit():
+            out.append("0")
+        else:
+            out.append("Xx" if tok[0].isupper() else "x")
+    return " ".join(out)
+
+
+TRANSITIONS = ("however", "moreover", "furthermore", "additionally", "overall", "therefore", "conclusion")
+CONTRACTION_RE = re.compile(r"\b\w+['\u2019](?:t|s|re|ve|ll|d|m)\b", re.I)
+
+
+def _repeat_rate(items):
+    return 1 - len(set(items)) / len(items) if items else 0.0
+
+
+def extended_features(text):
+    """style_features plus finer line structure and repetition, which weak generators tend to show."""
+    feats = style_features(text)
+    lower = [w.lower() for w in WORD_RE.findall(text)]
+    n_words = max(len(lower), 1)
+    counts = {}
+    for w in lower:
+        counts[w] = counts.get(w, 0) + 1
+    sents = [s.strip().lower() for s in SENT_SPLIT_RE.split(text.strip()) if s.strip()]
+    starts = [s.split()[0] for s in sents if s.split()]
+    sent_lens = np.array([len(s.split()) for s in sents]) if sents else np.array([0])
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    line_lens = np.array([len(l) for l in lines]) if lines else np.array([0])
+    n_lines = max(len(lines), 1)
+    n_breaks = text.count("\n")
+    tail = text.rstrip()[-1:]
+    feats.update({
+        "bigram_repeat": _repeat_rate(list(zip(lower, lower[1:]))),
+        "trigram_repeat": _repeat_rate(list(zip(lower, lower[1:], lower[2:]))),
+        "sentence_repeat": _repeat_rate(sents),
+        "sentence_start_repeat": _repeat_rate(starts),
+        "hapax_ratio": sum(c == 1 for c in counts.values()) / n_words,
+        "long_word_ratio": sum(len(w) >= 7 for w in lower) / n_words,
+        "contraction_rate": len(CONTRACTION_RE.findall(text)) / n_words,
+        "transition_rate": sum(w in TRANSITIONS for w in lower) / n_words,
+        "sent_len_cv": sent_lens.std() / max(sent_lens.mean(), 1),
+        "commas_per_sentence": text.count(",") / max(len(sents), 1),
+        "n_paragraphs": len(re.split(r"\n\s*\n", text.strip())),
+        "single_break_share": len(re.findall(r"(?<!\n)\n(?!\n)", text)) / max(n_breaks, 1),
+        "line_len_std": line_lens.std(),
+        "first_line_len": line_lens[0],
+        "last_line_len": line_lens[-1],
+        "lines_end_punct": sum(l[-1] in ".!?" for l in lines) / n_lines,
+        "lines_end_colon": sum(l.endswith(":") for l in lines) / n_lines,
+        "lines_start_upper": sum(l[0].isupper() for l in lines) / n_lines,
+        "numbered_lines": len(re.findall(r"^\s*\d+[.)]\s", text, flags=re.M)),
+        "bullet_lines": len(re.findall(r"^\s*[-*\u2022]\s", text, flags=re.M)),
+        "bold_marks": text.count("**"),
+        "ends_alpha": float(tail.isalpha()),
+        "ends_comma": float(tail == ","),
+    })
+    return feats
+
+
+def build_extended_features(df):
+    return pd.DataFrame([extended_features(t) for t in df.text], index=df.index)
