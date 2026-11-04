@@ -16,7 +16,6 @@ Outputs (results/eda/):
     figures/*.png
 """
 import argparse
-import re
 import time
 import unicodedata
 from collections import Counter
@@ -32,29 +31,19 @@ from scipy.stats import ks_2samp
 from sklearn.cluster import KMeans
 from sklearn.decomposition import TruncatedSVD
 from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS, CountVectorizer, TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import Normalizer
 
-from src.data import load_all, load_split
+from src.data import load_all, load_split, near_duplicate_pairs
+from src.features import HOMOGLYPH_RE, LAYOUT_FEATURES, WORD_RE, build_features
 
 ROOT = Path(__file__).resolve().parents[1]
 SPLIT_COLORS = {"train": "#4C72B0", "unlabeled": "#55A868", "test": "#C44E52"}
 LABEL_NAMES = {0: "human", 1: "AI"}
-
-WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
-SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-ZERO_WIDTH_RE = re.compile("[​-‏⁠﻿]")
-# A "word" mixing Latin with Cyrillic/Greek letters is a classic homoglyph attack.
-HOMOGLYPH_RE = re.compile(r"\b(?=\w*[A-Za-z])(?=\w*[Ͱ-ϿЀ-ӿ])\w+\b")
-PUNCT = {
-    "comma": ",", "semicolon": ";", "colon": ":", "exclam": "!", "question": "?",
-    "dquote": '"', "squote": "'", "paren": "(", "hyphen": "-", "emdash": "—",
-    "endash": "–", "ellipsis": "…", "curly_quote": "“”‘’",
-}
 
 
 class Report:
@@ -88,48 +77,6 @@ def directional_auc(y, x):
     """AUROC of a single feature, flipped so it is >= 0.5; sign tells the direction."""
     auc = roc_auc_score(y, x)
     return (auc, "+AI") if auc >= 0.5 else (1 - auc, "+human")
-
-
-# ---------------------------------------------------------------- features
-def style_features(text):
-    words = WORD_RE.findall(text)
-    n_words = max(len(words), 1)
-    lower = [w.lower() for w in words]
-    sents = [s for s in SENT_SPLIT_RE.split(text.strip()) if s]
-    sent_lens = np.array([len(s.split()) for s in sents]) if sents else np.array([0])
-    n_chars = max(len(text), 1)
-    lines = text.split("\n")
-    feats = {
-        "n_chars": len(text),
-        "n_words": len(text.split()),
-        "avg_word_len": np.mean([len(w) for w in words]) if words else 0,
-        "n_sentences": len(sents),
-        "avg_sent_len": sent_lens.mean(),
-        "std_sent_len": sent_lens.std(),
-        "type_token_ratio": len(set(lower)) / n_words,
-        "stopword_ratio": sum(w in ENGLISH_STOP_WORDS for w in lower) / n_words,
-        "n_lines": len(lines),
-        "blank_lines": sum(1 for l in lines if not l.strip()),
-        "avg_line_len": np.mean([len(l) for l in lines]),
-        "digit_ratio": sum(c.isdigit() for c in text) / n_chars,
-        "upper_ratio": sum(c.isupper() for c in text) / n_chars,
-        "non_ascii_ratio": sum(ord(c) > 127 for c in text) / n_chars,
-        "first_person": sum(w in {"i", "me", "my", "mine", "we", "our", "us"} for w in lower) / n_words,
-        "ends_terminal_punct": float(text.rstrip()[-1:] in ".!?\"')"),
-        "starts_lowercase": float(text[:1].islower()),
-        "trailing_ws": float(text != text.rstrip()),
-        "double_space": text.count("  "),
-        "markdown_marks": len(re.findall(r"^\s*(?:[#>*-]|\d+\.)\s", text, flags=re.M)),
-        "zero_width": len(ZERO_WIDTH_RE.findall(text)),
-        "homoglyph_words": len(HOMOGLYPH_RE.findall(text)),
-    }
-    for name, chars in PUNCT.items():
-        feats[f"p_{name}"] = sum(text.count(c) for c in chars) / n_words
-    return feats
-
-
-def build_features(df):
-    return pd.DataFrame([style_features(t) for t in df.text], index=df.index)
 
 
 # ---------------------------------------------------------------- sections
@@ -239,9 +186,8 @@ def section_shortcuts(df, feats, rep):
     tr = df.split == "train"
     y = df.loc[tr, "label"].astype(int)
     cv = StratifiedKFold(5, shuffle=True, random_state=0)
-    layout = ["blank_lines", "n_lines", "avg_line_len", "markdown_marks"]
     for name, cols in [("all style features", list(feats.columns)),
-                       ("without line-layout features", [c for c in feats.columns if c not in layout])]:
+                       ("without line-layout features", [c for c in feats.columns if c not in LAYOUT_FEATURES])]:
         p = cross_val_predict(HistGradientBoostingClassifier(random_state=0), feats.loc[tr, cols], y,
                               cv=cv, method="predict_proba")[:, 1]
         rep.add(f"- {name}: 5-fold CV AUROC {roc_auc_score(y, p):.3f}")
@@ -320,23 +266,14 @@ def section_clusters(df, rep, out_dir, k, seed):
     return df
 
 
-def section_near_dups(df, rep, out_dir, threshold, chunk=1000):
+def section_near_dups(df, rep, out_dir, threshold):
     rep.h(f"7. Exact and near duplicates (word 1-2gram TF-IDF cosine >= {threshold})")
     norm = df.text.str.lower().str.replace(r"\s+", " ", regex=True).str.strip()
     exact = df[norm.duplicated(keep=False)]
     rep.add(f"- exact duplicates (after lowercasing/whitespace): {len(exact)} docs, "
             f"by split: {exact.split.value_counts().to_dict()}")
 
-    X = TfidfVectorizer(ngram_range=(1, 2), min_df=2, sublinear_tf=True, dtype=np.float32).fit_transform(df.text)
-    pairs = []
-    for start in range(0, X.shape[0], chunk):
-        S = (X[start:start + chunk] @ X.T).toarray()
-        for i_local, row in enumerate(S):
-            i = start + i_local
-            row[: i + 1] = 0  # upper triangle only, skip self
-            for j in np.flatnonzero(row >= threshold):
-                pairs.append((i, j, row[j]))
-    p = pd.DataFrame(pairs, columns=["i", "j", "cosine"])
+    p = near_duplicate_pairs(df.text, threshold)
     if p.empty:
         rep.add("- no near-duplicate pairs found")
         return
