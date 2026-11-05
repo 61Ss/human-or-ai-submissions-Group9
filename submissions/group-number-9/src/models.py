@@ -10,7 +10,7 @@ from sklearn.naive_bayes import MultinomialNB
 from sklearn.pipeline import Pipeline
 from sklearn.svm import LinearSVC
 
-from src.features import LAYOUT_FEATURES, build_features, strip_layout
+from src.features import LAYOUT_FEATURES, build_features, mask_content, strip_layout
 
 SEED = 42
 
@@ -78,6 +78,11 @@ MODELS = {m.name: m for m in [
     ModelSpec("char_svm", "char_wb n-gram TF-IDF",
               lambda: Pipeline([("tfidf", _char_tfidf()), ("clf", LinearSVC(dual="auto", max_iter=5000))]),
               {"tfidf__ngram_range": _CHAR_NGRAMS, "clf__C": [0.03, 0.1, 0.3, 1]}),
+    ModelSpec("masked_lr", "function words + punctuation, content words masked",
+              lambda: Pipeline([("tfidf", TfidfVectorizer(preprocessor=mask_content, token_pattern=r"\S+",
+                                                          lowercase=False, sublinear_tf=True, min_df=2)),
+                                ("clf", _lr())]),
+              {"tfidf__ngram_range": [(1, 2), (1, 3), (1, 4)], "clf__C": [0.3, 1, 3, 10, 30, 100]}),
     ModelSpec("style_hgb", "all stylometric features (with line layout)",
               _hgb, _HGB_GRID, drop_features=()),
     ModelSpec("style_hgb_nolayout", "stylometric features minus line layout",

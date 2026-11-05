@@ -39,5 +39,12 @@
     "l2_regularization": 10.0,
     "learning_rate": 0.2,
     "max_leaf_nodes": 63
+  },
+  "masked_lr": {
+    "clf__C": 30,
+    "tfidf__ngram_range": [
+      1,
+      4
+    ]
   }
 }
