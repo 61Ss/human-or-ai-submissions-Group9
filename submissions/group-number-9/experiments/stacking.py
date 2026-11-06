@@ -22,7 +22,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
+from sklearn.base import clone
 from sklearn.ensemble import HistGradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
@@ -36,7 +38,8 @@ from src.models import SEED, build_tuned
 ROOT = Path(__file__).resolve().parents[1]
 OUT_DIR = ROOT / "results" / "stacking"
 BEST = json.loads((ROOT / "results" / "model_comparison" / "best_params.json").read_text())
-TEXT_MODELS = ["word_lr", "masked_lr", "char_lr"]
+CACHE = ROOT / "cache"  # filled by experiments.extract_neural
+TEXT_MODELS = ["word_lr", "masked_lr", "char_lr", "minilm_lr"]
 VARIANTS = {  # name -> (feature set, text models)
     "style_v1": ("v1", []),
     "style_v2": ("v2", []),
@@ -44,17 +47,40 @@ VARIANTS = {  # name -> (feature set, text models)
     "v2_masked": ("v2", ["masked_lr"]),
     "v2_word_masked": ("v2", ["word_lr", "masked_lr"]),
     "v2_word_masked_char": ("v2", ["word_lr", "masked_lr", "char_lr"]),
+    "gpt2_style": ("v2_gpt2", []),
+    "gpt2_word_masked": ("v2_gpt2", ["word_lr", "masked_lr"]),
+    "v2_word_masked_minilm": ("v2", ["word_lr", "masked_lr", "minilm_lr"]),
+    "gpt2_word_masked_minilm": ("v2_gpt2", ["word_lr", "masked_lr", "minilm_lr"]),
 }
 GRID = [{"learning_rate": lr, "max_iter": it, "max_leaf_nodes": leaves, "l2_regularization": l2}
         for (lr, it), leaves, l2 in itertools.product([(0.03, 400), (0.1, 200), (0.2, 100)], [7, 15, 31, 63], [0.0, 10.0])]
 
 
+def minilm_embeddings(df):
+    cached = np.load(CACHE / "minilm.npz")
+    return pd.DataFrame(cached["emb"], index=cached["id"]).loc[df.id].values
+
+
 def text_scores(name, fit_df, eval_df):
     """Return out-of-fold log-odds for fit_df and full-fit log-odds for eval_df."""
-    texts, y = fit_df.text.tolist(), fit_df.label.astype(int).values
+    y = fit_df.label.astype(int).values
     cv = StratifiedKFold(5, shuffle=True, random_state=SEED)
-    oof = cross_val_predict(build_tuned(name, BEST[name]), texts, y, cv=cv, method="decision_function")
-    return oof, build_tuned(name, BEST[name]).fit(texts, y).decision_function(eval_df.text.tolist())
+    if name == "minilm_lr":  # C fixed in advance; the booster decides how much to trust this score
+        model, X, X_eval = LogisticRegression(C=10, max_iter=2000), minilm_embeddings(fit_df), minilm_embeddings(eval_df)
+    else:
+        model, X, X_eval = build_tuned(name, BEST[name]), fit_df.text.tolist(), eval_df.text.tolist()
+    oof = cross_val_predict(model, X, y, cv=cv, method="decision_function")
+    return oof, clone(model).fit(X, y).decision_function(X_eval)
+
+
+def build_feature_set(kind, df):
+    if kind == "v1":
+        return build_features(df)
+    feats = build_extended_features(df)
+    if kind == "v2_gpt2":
+        gpt2 = pd.read_csv(CACHE / "gpt2_surprisal.csv").set_index("id").loc[df.id]
+        feats = feats.assign(**{c: gpt2[c].values for c in gpt2})
+    return feats
 
 
 def stack_matrix(feats, text, models):
@@ -113,7 +139,7 @@ def compare():
     labeled = labeled.reset_index(drop=True)
     in_val = labeled.id.isin(val.id)
     train, val = labeled[~in_val], labeled[in_val]
-    feature_sets = {"v1": build_features(labeled), "v2": build_extended_features(labeled)}
+    feature_sets = {kind: build_feature_set(kind, labeled) for kind in ("v1", "v2", "v2_gpt2")}
     folds, val_split = build_splits(train, val)
     splits = {**folds, "val": val_split}
     text = cached_text(splits)
@@ -131,10 +157,9 @@ def submit(name):
     row = pd.read_csv(OUT_DIR / "comparison.csv").set_index("variant").loc[name]
     params = json.loads(row.params)
     train, test = load_split("train"), load_split("test")
-    build = build_features if kind == "v1" else build_extended_features
     text = dict(zip(models, Parallel(n_jobs=-1)(delayed(text_scores)(m, train, test) for m in models)))
-    Xf = stack_matrix(build(train), {m: text[m][0] for m in models}, models)
-    Xe = stack_matrix(build(test), {m: text[m][1] for m in models}, models)
+    Xf = stack_matrix(build_feature_set(kind, train), {m: text[m][0] for m in models}, models)
+    Xe = stack_matrix(build_feature_set(kind, test), {m: text[m][1] for m in models}, models)
     sub = pd.DataFrame({"id": test.id, "label": fit_booster(params, Xf, train.label.astype(int).values, Xe)})
     check_submission(sub, test)
     out = ROOT / "submissions" / f"stack_{name}.csv"
