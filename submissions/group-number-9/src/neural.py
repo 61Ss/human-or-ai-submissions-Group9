@@ -1,7 +1,8 @@
-"""Pretrained-model features: GPT-2 surprisal statistics and MiniLM sentence embeddings.
+"""Pretrained-model features: language-model surprisal and curvature, and MiniLM sentence embeddings.
 
-Weights come from the Hugging Face Hub (gpt2, sentence-transformers/all-MiniLM-L6-v2) and are used
-only as fixed feature extractors. Nothing here sees labels.
+Weights come from the Hugging Face Hub (gpt2, gpt2-medium, facebook/opt-125m,
+sentence-transformers/all-MiniLM-L6-v2) and are used only as fixed feature extractors. Nothing here
+sees labels.
 """
 import os
 
@@ -31,68 +32,84 @@ def _batches(texts, batch_size):
         yield idx, [texts[i] for i in idx]
 
 
+def _surprisal_stats(n, r):
+    """Summaries of per-token negative log-probability n and predicted rank r."""
+    half = len(n) // 2
+    return {
+        "nll_mean": n.mean(), "nll_std": n.std(),
+        "nll_q10": np.quantile(n, 0.1), "nll_q50": np.quantile(n, 0.5), "nll_q90": np.quantile(n, 0.9),
+        "nll_first_half": n[:half].mean(), "nll_second_half": n[half:].mean(),
+        "top1": (r == 0).mean(), "top10": (r < 10).mean(), "top100": (r < 100).mean(),
+        "rare": (r >= 1000).mean(),
+        "diff_std": np.diff(n).std() if len(n) > 1 else 0.0,
+    }
+
+
+def _curvature_stats(g, u, v):
+    """Analytic conditional probability curvature, following Fast-DetectGPT (Bao et al., 2024).
+
+    g is each token's log-probability minus its expectation under the model's own predictive
+    distribution, u that expectation, and v its variance; this adjusts for how uncertain the model
+    was at each position.
+    """
+    z = g / np.sqrt(v)
+    return {
+        "curv_total": g.sum() / np.sqrt(v.sum()), "curv_z_mean": z.mean(), "curv_z_std": z.std(),
+        "curv_z_q10": np.quantile(z, 0.1), "curv_z_q90": np.quantile(z, 0.9),
+        "curv_entropy_mean": -u.mean(), "curv_entropy_std": u.std(),
+    }
+
+
 @torch.no_grad()
-def surprisal_features(texts, model_name="gpt2", max_length=512, batch_size=8):
-    """Summaries of per-token surprisal: AI text is often more predictable to a language model."""
+def _per_token_stats(texts, model_name, stats, max_length, batch_size):
+    """Run a language model over texts; stats maps per-token arrays to one row per document."""
     tok = AutoTokenizer.from_pretrained(model_name)
-    tok.pad_token = tok.eos_token
+    tok.padding_side = "right"
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
     model = AutoModelForCausalLM.from_pretrained(model_name).to(DEVICE).eval()
     rows = [None] * len(texts)
     for idx, chunk in _batches(texts, batch_size):
         enc = tok(chunk, return_tensors="pt", padding=True, truncation=True, max_length=max_length).to(DEVICE)
         logp = model(**enc).logits[:, :-1].log_softmax(-1)  # about 0.8 GB per batch at full length
-        target = logp.gather(-1, enc.input_ids[:, 1:].unsqueeze(-1))
-        nll = (-target.squeeze(-1)).cpu().numpy()
-        rank = (logp > target).sum(-1).cpu().numpy()
-        mask = enc.attention_mask[:, 1:].bool().cpu().numpy()
-        del logp, target, enc
-        free_device_memory()
-        for pos, n, r, m in zip(idx, nll, rank, mask):
-            n, r = n[m], r[m]
-            half = len(n) // 2
-            rows[pos] = {
-                "gpt2_nll_mean": n.mean(), "gpt2_nll_std": n.std(),
-                "gpt2_nll_q10": np.quantile(n, 0.1), "gpt2_nll_q50": np.quantile(n, 0.5),
-                "gpt2_nll_q90": np.quantile(n, 0.9),
-                "gpt2_nll_first_half": n[:half].mean(), "gpt2_nll_second_half": n[half:].mean(),
-                "gpt2_top1": (r == 0).mean(), "gpt2_top10": (r < 10).mean(), "gpt2_top100": (r < 100).mean(),
-                "gpt2_rare": (r >= 1000).mean(),
-                "gpt2_diff_std": np.diff(n).std() if len(n) > 1 else 0.0,
-            }
-    return pd.DataFrame(rows)
-
-
-@torch.no_grad()
-def curvature_features(texts, model_name="gpt2", max_length=512, batch_size=8):
-    """Analytic conditional probability curvature, following Fast-DetectGPT (Bao et al., 2024).
-
-    Each token's log-probability is compared with its expectation under the model's own predictive
-    distribution, which adjusts for how uncertain the model was at that position.
-    """
-    tok = AutoTokenizer.from_pretrained(model_name)
-    tok.pad_token = tok.eos_token
-    model = AutoModelForCausalLM.from_pretrained(model_name).to(DEVICE).eval()
-    rows = [None] * len(texts)
-    for idx, chunk in _batches(texts, batch_size):
-        enc = tok(chunk, return_tensors="pt", padding=True, truncation=True, max_length=max_length).to(DEVICE)
-        logp = model(**enc).logits[:, :-1].log_softmax(-1)
+        observed = logp.gather(-1, enc.input_ids[:, 1:].unsqueeze(-1))
         prob = logp.exp()
         expected = (prob * logp).sum(-1)
         variance = (prob * logp.square()).sum(-1) - expected.square()
-        observed = logp.gather(-1, enc.input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
-        gap, mu, var = (observed - expected).cpu().numpy(), expected.cpu().numpy(), variance.clamp_min(1e-6).cpu().numpy()
+        arrays = {
+            "nll": (-observed.squeeze(-1)).cpu().numpy(),
+            "rank": (logp > observed).sum(-1).cpu().numpy(),
+            "gap": (observed.squeeze(-1) - expected).cpu().numpy(),
+            "expected": expected.cpu().numpy(),
+            "variance": variance.clamp_min(1e-6).cpu().numpy(),
+        }
         mask = enc.attention_mask[:, 1:].bool().cpu().numpy()
-        del logp, prob, expected, variance, observed, enc
+        del logp, observed, prob, expected, variance, enc
         free_device_memory()
-        for pos, g, u, v, m in zip(idx, gap, mu, var, mask):
-            g, u, v = g[m], u[m], v[m]
-            z = g / np.sqrt(v)
-            rows[pos] = {
-                "curv_total": g.sum() / np.sqrt(v.sum()), "curv_z_mean": z.mean(), "curv_z_std": z.std(),
-                "curv_z_q10": np.quantile(z, 0.1), "curv_z_q90": np.quantile(z, 0.9),
-                "curv_entropy_mean": -u.mean(), "curv_entropy_std": u.std(),
-            }
+        for i, pos in enumerate(idx):
+            rows[pos] = stats({k: v[i][mask[i]] for k, v in arrays.items()})
     return pd.DataFrame(rows)
+
+
+def surprisal_features(texts, model_name="gpt2", max_length=512, batch_size=8):
+    """Per-token surprisal summaries: AI text is often more predictable to a language model."""
+    def stats(a):
+        return {f"gpt2_{k}": v for k, v in _surprisal_stats(a["nll"], a["rank"]).items()}
+    return _per_token_stats(texts, model_name, stats, max_length, batch_size)
+
+
+def curvature_features(texts, model_name="gpt2", max_length=512, batch_size=8):
+    def stats(a):
+        return _curvature_stats(a["gap"], a["expected"], a["variance"])
+    return _per_token_stats(texts, model_name, stats, max_length, batch_size)
+
+
+def language_model_features(texts, model_name, prefix, max_length=512, batch_size=8):
+    """Surprisal and curvature summaries from one model, with its name as a column prefix."""
+    def stats(a):
+        row = {**_surprisal_stats(a["nll"], a["rank"]), **_curvature_stats(a["gap"], a["expected"], a["variance"])}
+        return {f"{prefix}_{k}": v for k, v in row.items()}
+    return _per_token_stats(texts, model_name, stats, max_length, batch_size)
 
 
 @torch.no_grad()

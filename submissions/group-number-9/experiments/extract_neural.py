@@ -7,16 +7,18 @@ Usage:
     python -m experiments.extract_neural
 """
 import time
+from functools import partial
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from src.data import load_all
-from src.neural import curvature_features, sentence_embeddings, surprisal_features
+from src.neural import curvature_features, language_model_features, sentence_embeddings, surprisal_features
 
 CACHE = Path(__file__).resolve().parents[1] / "cache"
 PART_SIZE = 500
+LANGUAGE_MODELS = {"facebook/opt-125m": "opt", "gpt2-medium": "medium"}
 
 
 def extract_in_parts(df, name, extract, output):
@@ -43,6 +45,9 @@ def main():
     df = load_all().reset_index(drop=True)
     extract_in_parts(df, "gpt2_parts", surprisal_features, "gpt2_surprisal.csv")
     extract_in_parts(df, "curvature_parts", curvature_features, "gpt2_curvature.csv")
+    for model_name, prefix in LANGUAGE_MODELS.items():
+        extract_in_parts(df, f"{prefix}_parts", partial(language_model_features, model_name=model_name, prefix=prefix),
+                         f"{prefix}_lm.csv")
     if not (CACHE / "minilm.npz").exists():
         t0 = time.time()
         np.savez_compressed(CACHE / "minilm.npz", id=df.id.values, emb=sentence_embeddings(df.text.tolist()))
