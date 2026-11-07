@@ -142,14 +142,14 @@ def compare():
     print(table.round(4).to_string(index=False))
 
 
-def submit(method):
+def submit(method, out=None):
     train, test, unlabeled = load_split("train"), load_split("test"), load_split("unlabeled")
     frame = pd.concat([d[["id", "text"]] for d in (train, test, unlabeled)], ignore_index=True)
     feats = all_features(frame, unlabeled.text.tolist())
     Xf, Xe, _ = fold_design(feats, train, test, unlabeled)
     sub = pd.DataFrame({"id": test.id, "label": fit_predict(method, Xf, train.label.astype(int).values, Xe)})
     check_submission(sub, test)
-    out = ROOT / "submissions" / f"improve_{method}.csv"
+    out = out or ROOT / "submissions" / f"improve_{method}.csv"
     sub.to_csv(out, index=False)
     print(f"wrote {out}")
 
