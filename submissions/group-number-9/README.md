@@ -88,7 +88,9 @@ The inputs are:
 | `stack_gpt2_word_masked` | 0.9997 | 0.9989 | 0.98496 |
 | `improve_curv_bag` | 0.9998 | 0.9990 | 0.98544 |
 | `curvature_roberta_single_10000` | 0.9999 | | 0.98660 |
-| `improve_all_blend` | 0.9999 | 0.9992 | about 0.991 (see `results/kaggle_tested/README.md`) |
+| `improve_lm3_bag` | 0.9998 | 0.9991 | 0.98809 |
+| `improve_medium_bag` | 0.9998 | 0.9991 | 0.98876 |
+| `improve_all_blend` | 0.9999 | 0.9992 | 0.99134 |
 
 Public scores were read from the Kaggle page by team members; private scores are unknown. Validation
 was reused across many experiments and sits near 1.0 for every strong model, so it is optimistic and
