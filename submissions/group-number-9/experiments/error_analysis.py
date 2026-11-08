@@ -8,11 +8,12 @@ experiments.improve_lm and scored on the fixed 2,000-row validation set. Outputs
 - subgroups.csv: validation AUROC by word-count bin, blank-line presence and topic domain, with
   bootstrap 95% intervals. The 10% RoBERTa rank blend is scored too.
 - predictions.csv: validation scores with the observable attributes used for error inspection.
-- errors.csv: false positives (human scored as AI) and false negatives (AI scored as human). If fewer
-  than five of a type cross the threshold, the closest misses are added and marked `near_miss`.
+- errors.csv: false positives (human scored as AI) and false negatives (AI scored as human).
 
-The blend output is an average percentile rank, not a probability, so errors are read from the
-blend's gradient-boosting component, which outputs P(AI); the decision threshold is 0.5.
+Errors are read from the final blend score, the same score submitted to Kaggle, with threshold 0.5.
+That score is an average percentile rank, not a calibrated probability, so 0.5 labels the top-ranked
+half of the validation set as AI, which matches its 50% AI rate. `p_ai` is kept for reference: the
+probability output of the blend's gradient-boosting component.
 
 Usage:
     python -m experiments.error_analysis    # writes results/error_analysis/
@@ -38,7 +39,6 @@ NEURAL_VAL = ROOT / "results" / "curvature_roberta" / "single_validation_predict
 LENGTH_BINS = [0, 150, 250, np.inf]
 LENGTH_LABELS = ["<150 words", "150-250 words", ">250 words"]
 THRESHOLD = 0.5
-MIN_ERRORS = 5
 CURLY = "[\u2018\u2019\u201c\u201d]"  # typographic quotes and apostrophes
 
 
@@ -112,18 +112,15 @@ def main():
                 rows.append({**auroc_row(group, name, part.label.values, part[model].values), "model": model})
     pd.DataFrame(rows).to_csv(OUT_DIR / "subgroups.csv", index=False)
 
-    fp = pred[(pred.label == 0) & (pred.p_ai >= THRESHOLD)].sort_values("p_ai", ascending=False)
-    fn = pred[(pred.label == 1) & (pred.p_ai < THRESHOLD)].sort_values("p_ai")
-    near_fp = pred[(pred.label == 0) & (pred.p_ai < THRESHOLD)].nlargest(max(0, MIN_ERRORS - len(fp)), "p_ai")
-    near_fn = pred[(pred.label == 1) & (pred.p_ai >= THRESHOLD)].nsmallest(max(0, MIN_ERRORS - len(fn)), "p_ai")
-    errors = pd.concat([fp.assign(error="FP", near_miss=False), near_fp.assign(error="FP", near_miss=True),
-                        fn.assign(error="FN", near_miss=False), near_fn.assign(error="FN", near_miss=True)])
+    fp = pred[(pred.label == 0) & (pred.blend >= THRESHOLD)].sort_values("blend", ascending=False)
+    fn = pred[(pred.label == 1) & (pred.blend < THRESHOLD)].sort_values("blend")
+    errors = pd.concat([fp.assign(error="FP"), fn.assign(error="FN")])
     errors.to_csv(OUT_DIR / "errors.csv", index=False)
 
     print(gap.round(5).to_string(index=False))
     print(pd.DataFrame(rows).round(4).to_string(index=False))
-    print(f"\nFP={len(fp)} FN={len(fn)} at P(AI) threshold {THRESHOLD}")
-    print(errors.drop(columns=["blend", "rank10"]).round(4).to_string(index=False))
+    print(f"\nFP={len(fp)} FN={len(fn)} at blend-score threshold {THRESHOLD}")
+    print(errors.drop(columns=["rank10"]).round(4).to_string(index=False))
 
 
 if __name__ == "__main__":

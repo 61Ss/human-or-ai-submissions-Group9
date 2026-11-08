@@ -39,50 +39,53 @@ passages (word counts by whitespace).
 
 Short passages are hardest: they give the language-model statistics fewer tokens to average. The
 blank-line split matters because EDA found that a blank line almost always means AI in the training
-data. All 11 validation errors have no blank line, so the model is weakest where this shortcut is
+data. All 11 validation errors (below) have no blank line, so the model is weakest where this shortcut is
 absent. By topic, cluster 6 (movie reviews) and cluster 8 (biographies) have the lowest validation
 AUROC (0.9996 each), matching cluster 8 being the worst LODO domain. Differences are small and the
 intervals overlap, because the validation set is nearly saturated.
 
 ## Q4.3 Errors
 
-The blend outputs an average percentile rank, so errors use its boosting component's P(AI) with
-threshold 0.5. That gives 3 false positives and 8 false negatives. The two highest-scoring human
-passages below 0.5 are added as near misses to show five of each type.
+Errors use the final blend score, the same score submitted to Kaggle, with threshold 0.5. The score
+is an average percentile rank rather than a calibrated probability, so 0.5 labels the top-ranked half
+of the validation set as AI, matching its 50% AI rate (1,001 of 2,000 passages are labeled AI). This
+gives 6 false positives and 5 false negatives, all listed. `P(AI)` is the probability from the blend's
+gradient-boosting component, shown only to indicate how confident the error is.
 
-| ID | Type | P(AI) | Possible reason |
-|---:|---|---:|---|
-| 988 | FP | 0.995 | Polished, balanced film review ("however", structured critique) with low GPT-2 surprisal (2.75) |
-| 7887 | FP | 0.993 | Greek text; English-centric features and GPT-2 byte tokens make it look predictable |
-| 961 | FP | 0.523 | Very short (95 words) movie review; little evidence either way |
-| 1496 | FP (near miss) | 0.443 | Recipe ingredient list: formulaic and highly predictable (surprisal 2.10) |
-| 2290 | FP (near miss) | 0.427 | Encyclopedic military history; neutral register resembles AI text |
-| 783 | FN | 0.001 | AI recipe imitating scraped human formatting (inline ingredient list, double spaces) |
-| 3168 | FN | 0.003 | AI math abstract full of LaTeX; markup dominates the token statistics |
-| 6978 | FN | 0.031 | AI paper abstract wrapped in quotation marks, technical vocabulary |
-| 8022 | FN | 0.084 | AI Wikipedia-style biography; fluent but with invented facts the model cannot check |
-| 3340 | FN | 0.252 | Casual Reddit-style post with typos and U+02BC apostrophes (possible adversarial character swap) |
-| 2701 | FN | 0.292 | Portuguese text; high surprisal (5.87) under English GPT-2 looks human |
-| 8692 | FN | 0.314 | AI abstract with "Title:/Author:" header and a Greek letter in the title |
-| 7361 | FN | 0.428 | AI biography with a "[1]" citation marker and one sentence repeated three times |
+| ID | Type | Score | P(AI) | Possible reason |
+|---:|---|---:|---:|---|
+| 988 | FP | 0.517 | 0.995 | Polished, balanced film review ("however", structured critique); low GPT-2 surprisal (2.75) |
+| 7887 | FP | 0.512 | 0.993 | Greek text; English-centric features and GPT-2 byte tokens make it look predictable |
+| 4078 | FP | 0.504 | 0.417 | Wikipedia disambiguation list repeating "Cassa di Risparmio ..., an Italian bank"; surprisal 2.17 |
+| 2290 | FP | 0.504 | 0.427 | Encyclopedic military history in a neutral register |
+| 4656 | FP | 0.502 | 0.069 | Human Wikipedia biography of an ice-hockey player; surprisal 2.25 |
+| 7797 | FP | 0.500 | 0.043 | Human Wikipedia biography of a well-known politician; surprisal 2.24 |
+| 783 | FN | 0.487 | 0.001 | AI recipe imitating scraped human formatting (inline ingredient list, double spaces) |
+| 3168 | FN | 0.489 | 0.003 | AI math abstract full of LaTeX; markup dominates the token statistics |
+| 8692 | FN | 0.490 | 0.314 | AI abstract with a "Title:/Author:" header and a Greek letter in the title |
+| 6978 | FN | 0.492 | 0.031 | AI paper abstract wrapped in quotation marks, technical vocabulary |
+| 8022 | FN | 0.499 | 0.084 | Fluent AI Wikipedia-style biography with invented facts the model cannot check |
 
 ## Q4.4 Patterns
 
 Observed:
 
-- Encyclopedic and biographical text (cluster 8) is the weakest domain in validation and LODO, and
-  three of eight false negatives are AI biographies written in Wikipedia style.
-- Non-English passages fail in both directions (Greek false positive, Portuguese false negative).
-  Only 5 validation passages have more than 10% non-ASCII letters, and their AUROC is 0.83.
+- Encyclopedic text is ambiguous in both directions. Four of six false positives are human
+  Wikipedia-style passages (a disambiguation list, a military history, two biographies) and one false
+  negative is an AI biography. These human passages have some of the lowest GPT-2 surprisal among the
+  errors (2.17-2.25). Biographies (cluster 8) are also the worst LODO domain.
+- Four of five false negatives are AI text in a structured document format: a recipe, a LaTeX
+  abstract, a headed abstract and a quoted abstract.
 - Every error lacks a blank line, and short passages have the lowest AUROC.
-- Several false negatives copy human document formats: recipe lists, LaTeX, quoted abstracts, citation
-  markers.
+- Non-English text is unreliable: the five validation passages with more than 10% non-ASCII letters
+  have AUROC 0.83 (one Greek false positive above).
 
-Speculation (not tested): the language-model features compare a passage with what an English
-reference model expects, so any text far from that model (another language, heavy markup) breaks the
-signal. Repetition inside a passage (ID 7361) may also be an AI cue our features do not capture.
+Speculation (not tested): GPT-2-family models were trained on web text that includes Wikipedia, so
+real encyclopedic passages may look unusually predictable, which the model reads as AI. The
+language-model features also assume English prose, so markup and other languages distort them.
 
-A fix for one pattern: detect non-English passages and back off to features that do not depend on an
-English language model, or add a multilingual reference model. This matters little for Kaggle,
-because only about 0.1% of test passages have more than 10% non-ASCII letters, so the
-domain-robustness work in Q5 targets the larger shift (fiction and poetry).
+A fix for the first pattern: express surprisal relative to the passage's topic, for example as a
+z-score within its topic cluster or as the difference from a reference model that has not seen
+Wikipedia (such as our n-gram model fit on `unlabeled.csv`), so that a genre that is predictable for
+everyone is not taken as evidence of AI. It can be tested with the same LODO protocol on the
+encyclopedic clusters.
