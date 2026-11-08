@@ -9,3 +9,6 @@ Data/
 data/
 cache/
 submission.csv
+
+# Separate environment for the original RoBERTa dependency versions.
+.venv-rank10/

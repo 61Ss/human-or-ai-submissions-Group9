@@ -91,11 +91,30 @@ The inputs are:
 | `improve_lm3_bag` | 0.9998 | 0.9991 | 0.98809 |
 | `improve_medium_bag` | 0.9998 | 0.9991 | 0.98876 |
 | `improve_all_blend` | 0.9999 | 0.9992 | 0.99134 |
+| `all_blend_roberta_rank10_10000` | unavailable | | 0.99132 |
 
 Public scores were read from the Kaggle page by team members; private scores are unknown. Validation
 was reused across many experiments and sits near 1.0 for every strong model, so it is optimistic and
 cannot separate them. We relied more on LODO to estimate behavior on unfamiliar text. Negative results,
 such as pseudo-labeling and density weighting, are in `results/improve/` and `results/unlabeled/`.
+
+## Kenny's 10% RoBERTa rank-blend submission
+
+Recreate the exact public-0.99132 CSV from the committed component predictions:
+
+```bash
+python -m experiments.all_blend_roberta_rank --verify-original --out submission.csv
+```
+
+`rank10` means 90% of `improve_all_blend` plus 10% percentile rank of supervised
+RoBERTa-base probabilities (seed 42, epoch 1, final fit on 10000 labels). The weight
+was fixed before its Kaggle evaluation. This final blend has **no offline validation
+AUROC**, because per-example held-out predictions for the newest baseline were
+unavailable. The earlier neural/curvature model's 0.999911 validation score belongs
+to a different blend. Exact commands for retraining, full configuration, original
+package versions, score provenance and limitations are documented in
+[`results/all_blend_roberta_rank/README.md`](results/all_blend_roberta_rank/README.md).
+Exact artifact replay has been tested; cross-hardware retraining may differ numerically.
 
 ## Repository layout
 
