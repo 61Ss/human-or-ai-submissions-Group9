@@ -1,4 +1,4 @@
-# Kenny's 0.99132 submission: exact reproduction
+# `all_blend_roberta_rank10_10000` (public 0.99132): exact reproduction
 
 Run commands from `submissions/group-number-9/`.
 
@@ -54,19 +54,26 @@ recipe from this 10% rank blend.
 
 | Model | Fixed validation AUROC | Public Kaggle AUROC |
 |---|---:|---:|
-| This 10% rank blend | **Unavailable** | 0.99132 |
-| Teammate `improve_all_blend` | reported 0.9998655 | 0.99134 |
+| This 10% rank blend | 0.999941 | 0.99132 |
+| Teammate `improve_all_blend` | 0.9998655 | 0.99134 |
 | RoBERTa alone, seed 42/epoch 1, trained on 8000 | 0.998853 | not separately submitted |
 | Earlier 35% RoBERTa + old-curvature log-odds blend | 0.999911 | 0.98660 |
 
 The newest baseline's per-example held-out scores were unavailable when this
-blend was built. Its offline AUROC therefore cannot be computed from the two
-component summary AUROCs. Do not report 0.999911 as this blend's validation score.
-Validation had been repeatedly reused, and private Kaggle scores are unknown.
+blend was built, so it was submitted without offline validation. They were
+computed afterwards: `python -m experiments.rank10_validation` refits
+`improve_all_blend` on the 8,000-row training partition, combines its validation
+scores with the RoBERTa (8,000-row fit) validation probabilities in
+`results/curvature_roberta/single_validation_predictions.csv` using the same fixed
+10% formula, and writes `validation.json` (0.999941, 95% CI 0.99987-0.99999).
+The weight was not tuned on this result. Do not report 0.999911 as this blend's
+validation score; it belongs to the earlier 35% log-odds blend. Validation had
+been repeatedly reused, and private Kaggle scores are unknown.
 The public blend is .00002 below the reference, with no observed public gain.
 
-`protocol.json`, `verification.json`, and the submission's `.json` manifest are
-historical records from the original working checkout, including hashes of the
+`protocol.json`, `verification.json`, `config.json` and the submission's `.json`
+manifest are historical records written before the validation check above (hence
+their null validation fields) from the original working checkout, including hashes of the
 original scripts/caches. The portable script replaces those checkout-specific
 dependencies with score artifacts. `kaggle_result.json` records the subsequent
 user-reported public score. `earlier_curvature_blend_validation.json` supports

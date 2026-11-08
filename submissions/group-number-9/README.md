@@ -57,9 +57,14 @@ Tests (mostly for the neural experiments):
 pip install pytest && python -m pytest tests
 ```
 
-## Final model
+## Final models
 
-`improve_all_blend`, a rank average of two models over the same inputs:
+We selected two final Kaggle submissions:
+
+- `improve_all_blend` (written by `predict.py`, described below)
+- `all_blend_roberta_rank10_10000`: 90% `improve_all_blend` plus 10% of a fine-tuned RoBERTa-base's percentile rank (see [RoBERTa rank blend](#roberta-rank-blend))
+
+`improve_all_blend` is a rank average of two models over the same inputs:
 
 - 10 bootstrap-resampled gradient-boosting models with 30% feature subsampling
 - 500 extra-randomized trees
@@ -91,30 +96,36 @@ The inputs are:
 | `improve_lm3_bag` | 0.9998 | 0.9991 | 0.98809 |
 | `improve_medium_bag` | 0.9998 | 0.9991 | 0.98876 |
 | `improve_all_blend` | 0.9999 | 0.9992 | 0.99134 |
-| `all_blend_roberta_rank10_10000` | unavailable | | 0.99132 |
+| `all_blend_roberta_rank10_10000` | 0.9999 | | 0.99132 |
 
 Public scores were read from the Kaggle page by team members; private scores are unknown. Validation
 was reused across many experiments and sits near 1.0 for every strong model, so it is optimistic and
 cannot separate them. We relied more on LODO to estimate behavior on unfamiliar text. Negative results,
 such as pseudo-labeling and density weighting, are in `results/improve/` and `results/unlabeled/`.
 
-## Kenny's 10% RoBERTa rank-blend submission
+## RoBERTa rank blend
 
-Recreate the exact public-0.99132 CSV from the committed component predictions:
+Recreate the exact public-0.99132 CSV (`all_blend_roberta_rank10_10000`) from the committed component
+predictions:
 
 ```bash
 python -m experiments.all_blend_roberta_rank --verify-original --out submission.csv
 ```
 
-`rank10` means 90% of `improve_all_blend` plus 10% percentile rank of supervised
-RoBERTa-base probabilities (seed 42, epoch 1, final fit on 10000 labels). The weight
-was fixed before its Kaggle evaluation. This final blend has **no offline validation
-AUROC**, because per-example held-out predictions for the newest baseline were
-unavailable. The earlier neural/curvature model's 0.999911 validation score belongs
-to a different blend. Exact commands for retraining, full configuration, original
-package versions, score provenance and limitations are documented in
-[`results/all_blend_roberta_rank/README.md`](results/all_blend_roberta_rank/README.md).
-Exact artifact replay has been tested; cross-hardware retraining may differ numerically.
+`rank10` means 90% of `improve_all_blend` plus 10% percentile rank of supervised RoBERTa-base
+probabilities (seed 42, epoch 1, final fit on 10,000 labels). The 10% weight was fixed before the blend
+was scored on validation or Kaggle.
+
+Validation AUROC is 0.99994 (95% CI 0.99987–0.99999), against 0.99987 for `improve_all_blend` alone
+and 0.99885 for RoBERTa alone. Both components were fit on the 8,000-row training partition and scored
+on the same 2,000 validation rows. Reproduce with `python -m experiments.rank10_validation`, which writes
+`results/all_blend_roberta_rank/validation.json`. There is no LODO score, because per-domain held-out
+RoBERTa predictions for this recipe do not exist. On the public leaderboard the blend scored 0.00002
+below `improve_all_blend`, a near tie.
+
+Retraining commands, full configuration, original package versions and score provenance are in
+[`results/all_blend_roberta_rank/README.md`](results/all_blend_roberta_rank/README.md). Exact replay
+from the committed predictions is tested; retraining RoBERTa on other hardware may differ numerically.
 
 ## Repository layout
 
@@ -146,7 +157,8 @@ All are from the Hugging Face Hub and run locally. Hidden test labels were never
 | `gpt2`, `gpt2-medium`, `facebook/opt-125m` | Fixed language models for surprisal and curvature features |
 | `sentence-transformers/all-MiniLM-L6-v2` | Fixed sentence embeddings (experiment only) |
 | `distilroberta-base` | Fine-tuned classifier (experiment only) |
-| `FacebookAI/roberta-base`, `microsoft/deberta-v3-base` | Fine-tuned classifiers (teammate experiments) |
+| `FacebookAI/roberta-base` | Fine-tuned classifier (10% of the `all_blend_roberta_rank10_10000` final submission) |
+| `microsoft/deberta-v3-base` | Fine-tuned classifier (teammate experiment) |
 
 We did not use external LLM APIs to label or predict test passages, and did not retrieve labels from RAID
 or any other source.
