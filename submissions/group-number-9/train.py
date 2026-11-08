@@ -27,6 +27,8 @@ FULL = [
     ["experiments.stack_transformer"],
     ["experiments.improve"],
     ["experiments.improve_lm"],
+    ["experiments.rank10_validation"],
+    ["experiments.error_analysis"],
 ]
 
 

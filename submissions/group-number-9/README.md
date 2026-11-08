@@ -51,6 +51,10 @@ python train.py --full
 Each script can also run alone, for example `python -m experiments.model_comparison`. Usage is in each
 file's docstring.
 
+Error analysis of the final model (report Q4: train/validation gap, length and other subgroups,
+false positives and negatives) is `python -m experiments.error_analysis`, which writes
+`results/error_analysis/`; `summary.md` there interprets the numbers.
+
 Tests (mostly for the neural experiments):
 
 ```bash
